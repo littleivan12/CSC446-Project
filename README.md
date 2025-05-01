@@ -3,7 +3,7 @@
 Authors: Natalie Hildreth, Ivan Ramos Candelero,and Jennifer Galicia-Torres 
 
 ## Description
-This project implements Aspect-Based Sentiment Classification (ABSA) for restaurant reviews using BERT and spaCy. Our restaurant review dataset can be found at https://www.kaggle.com/datasets/joebeachcapital/restaurant-reviews. This system identifies sentiment polarity (positive/neutral/negative) for specific aspects like food, service, and ambiance within customer reviews. Our implementation focuses on fine-grained sentiment analysis at the aspect level rather than document-level sentiment.
+This project implements Aspect-Based Sentiment Classification (ABSA) for restaurant reviews while also implementing word embedding and language modeling. Our restaurant review dataset can be found at https://www.kaggle.com/datasets/joebeachcapital/restaurant-reviews. This system identifies sentiment polarity (positive/neutral/negative) for specific aspects like food, service, and ambiance within customer reviews. Our implementation focuses on fine-grained sentiment analysis at the aspect level rather than document-level sentiment.
 
 ## Key Features:
 - Aspect extraction using dependency parsing
