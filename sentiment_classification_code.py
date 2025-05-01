@@ -6,8 +6,11 @@ import re
 import torch
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-from transformers import BertTokenizer, BertForSequenceClassification, AdamW, get_linear_schedule_with_warmup
+from transformers import BertTokenizer, BertForSequenceClassification, get_linear_schedule_with_warmup
+from torch.optim import AdamW
 from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
+import time
 
 # Verify GPU availability
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -23,11 +26,11 @@ BATCH_SIZE = 16
 EPOCHS = 3
 ASPECT_CATEGORIES = ['food', 'service', 'ambiance', 'price', 'quality']
 
-# Load dataset
-df = pd.read_csv("restaurant_reviews.csv")
-
 # Preprocessing functions
 def clean_text(text):
+    if pd.isna(text):
+        return ""
+    text = str(text)
     text = re.sub(r'[^\w\s]', '', text)
     text = re.sub(r'\d+', '', text)
     text = text.lower().strip()
@@ -41,28 +44,17 @@ def aspect_extraction(text):
             aspects.append(chunk.text.lower())
     return list(set(aspects))
 
-# Preprocessing pipeline
 def preprocess_data(df):
-    df['cleaned_text'] = df['review'].apply(clean_text)
+    df = df.copy()  # Fix SettingWithCopyWarning
+    df['Rating'] = pd.to_numeric(df['Rating'], errors='coerce')
+    df = df.dropna(subset=['Review', 'Rating'])
+    df['cleaned_text'] = df['Review'].apply(clean_text)
     df['aspects'] = df['cleaned_text'].apply(aspect_extraction)
     df = df.explode('aspects').reset_index(drop=True)
     df = df[df['aspects'].isin(ASPECT_CATEGORIES)]
-    
-    # Convert ratings to 3-class sentiment
-    df['sentiment'] = pd.cut(df['rating'], bins=[0, 2, 3, 5], 
+    df['sentiment'] = pd.cut(df['Rating'], bins=[0, 2, 3, 5], 
                             labels=['negative', 'neutral', 'positive'])
     return df
-
-processed_df = preprocess(df)
-print(f"Processed dataset size: {len(processed_df)}")
-
-# Split dataset
-train_df, test_df = train_test_split(processed_df, test_size=0.2, 
-                                   random_state=RANDOM_SEED,
-                                   stratify=processed_df['sentiment'])
-
-# BERT Tokenizer
-tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
 class ABSADataset(Dataset):
     def __init__(self, texts, aspects, labels, tokenizer, max_len):
@@ -80,8 +72,7 @@ class ABSADataset(Dataset):
         aspect = str(self.aspects[idx])
         label = self.labels[idx]
         
-        # Format: [CLS] text [SEP] aspect [SEP]
-        encoded = tokenizer.encode_plus(
+        encoded = self.tokenizer.encode_plus(
             text,
             aspect,
             add_special_tokens=True,
@@ -98,12 +89,6 @@ class ABSADataset(Dataset):
             'label': torch.tensor(label, dtype=torch.long)
         }
 
-# Convert labels to numerical values
-label_map = {'negative': 0, 'neutral': 1, 'positive': 2}
-train_df['label'] = train_df['sentiment'].map(label_map)
-test_df['label'] = test_df['sentiment'].map(label_map)
-
-# Create data loaders
 def create_data_loader(df, tokenizer, max_len, batch_size):
     ds = ABSADataset(
         texts=df.cleaned_text.values,
@@ -112,34 +97,17 @@ def create_data_loader(df, tokenizer, max_len, batch_size):
         tokenizer=tokenizer,
         max_len=max_len
     )
-    return DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=4)
+    return DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0)
 
-train_loader = create_data_loader(train_df, tokenizer, MAX_LEN, BATCH_SIZE)
-test_loader = create_data_loader(test_df, tokenizer, MAX_LEN, BATCH_SIZE)
-
-# Model setup
-model = BertForSequenceClassification.from_pretrained(
-    'bert-base-uncased',
-    num_labels=3,
-    output_attentions=False,
-    output_hidden_states=False
-).to(device)
-
-optimizer = AdamW(model.parameters(), lr=2e-5, correct_bias=False)
-total_steps = len(train_loader) * EPOCHS
-scheduler = get_linear_schedule_with_warmup(
-    optimizer,
-    num_warmup_steps=0,
-    num_training_steps=total_steps
-)
-
-# Training function
-def train_epoch(model, data_loader, optimizer, device, scheduler):
+def train_epoch(model, data_loader, optimizer, device, scheduler, epoch):
     model.train()
     losses = []
     correct_predictions = 0
     
-    for batch in data_loader:
+    progress_bar = tqdm(data_loader, desc=f'Epoch {epoch + 1}', leave=False)
+    start_time = time.time()
+    
+    for batch in progress_bar:
         optimizer.zero_grad()
         
         input_ids = batch['input_ids'].to(device)
@@ -163,10 +131,18 @@ def train_epoch(model, data_loader, optimizer, device, scheduler):
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         scheduler.step()
+        
+        elapsed = time.time() - start_time
+        avg_time = elapsed / len(losses)
+        remaining = avg_time * (len(data_loader) - len(losses))
+        progress_bar.set_postfix({
+            'loss': f'{loss.item():.4f}',
+            'elapsed': f'{elapsed:.1f}s',
+            'remaining': f'{remaining:.1f}s'
+        })
     
     return correct_predictions.double() / len(data_loader.dataset), np.mean(losses)
 
-# Evaluation function
 def eval_model(model, data_loader, device):
     model.eval()
     losses = []
@@ -193,51 +169,49 @@ def eval_model(model, data_loader, device):
     
     return correct_predictions.double() / len(data_loader.dataset), np.mean(losses)
 
-# Training loop
-for epoch in range(EPOCHS):
-    train_acc, train_loss = train_epoch(model, train_loader, optimizer, device, scheduler)
-    test_acc, test_loss = eval_model(model, test_loader, device)
-    
-    print(f'Epoch {epoch + 1}/{EPOCHS}')
-    print(f'Train loss: {train_loss:.4f} | Accuracy: {train_acc:.4f}')
-    print(f'Test loss: {test_loss:.4f} | Accuracy: {test_acc:.4f}')
-    print('-' * 50)
+if __name__ == '__main__':
+    # Load and process data
+    try:
+        df = pd.read_csv("restaurant_reviews.csv")
+        print("Dataset loaded successfully")
+    except FileNotFoundError:
+        print("Error: File not found")
+        exit()
 
-# Performance analysis
-def get_predictions(model, data_loader):
-    model.eval()
-    predictions = []
-    true_labels = []
-    
-    with torch.no_grad():
-        for batch in data_loader:
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            labels = batch['label'].to(device)
-            
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask
-            )
-            
-            _, preds = torch.max(outputs.logits, dim=1)
-            
-            predictions.extend(preds.cpu().numpy())
-            true_labels.extend(labels.cpu().numpy())
-    
-    return predictions, true_labels
+    df = preprocess_data(df)
+    train_df, test_df = train_test_split(df, test_size=0.2, random_state=RANDOM_SEED, stratify=df['sentiment'])
 
-y_pred, y_true = get_predictions(model, test_loader)
+    # Prepare data loaders
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    label_map = {'negative': 0, 'neutral': 1, 'positive': 2}
+    train_df['label'] = train_df['sentiment'].map(label_map)
+    test_df['label'] = test_df['sentiment'].map(label_map)
 
-# Calculate metrics
-precision, recall, f1, _ = precision_recall_fscore_support(y_true, y_pred, average='weighted')
-accuracy = accuracy_score(y_true, y_pred)
+    train_loader = create_data_loader(train_df, tokenizer, MAX_LEN, BATCH_SIZE)
+    test_loader = create_data_loader(test_df, tokenizer, MAX_LEN, BATCH_SIZE)
 
-print(f'Final Model Performance:')
-print(f'Accuracy: {accuracy:.4f}')
-print(f'Precision: {precision:.4f}')
-print(f'Recall: {recall:.4f}')
-print(f'F1 Score: {f1:.4f}')
+    # Initialize model
+    model = BertForSequenceClassification.from_pretrained(
+        'bert-base-uncased',
+        num_labels=3,
+        output_attentions=False,
+        output_hidden_states=False
+    ).to(device)
 
-# Save model
-torch.save(model.state_dict(), 'absa_bert_model.bin')
+    optimizer = AdamW(model.parameters(), lr=2e-5)
+    total_steps = len(train_loader) * EPOCHS
+    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
+
+    # Training loop
+    print("\nStarting training...")
+    for epoch in range(EPOCHS):
+        train_acc, train_loss = train_epoch(model, train_loader, optimizer, device, scheduler, epoch)
+        test_acc, test_loss = eval_model(model, test_loader, device)
+        
+        print(f'\nEpoch {epoch + 1}/{EPOCHS}')
+        print(f'Train Loss: {train_loss:.4f} | Accuracy: {train_acc:.4f}')
+        print(f'Test Loss: {test_loss:.4f} | Accuracy: {test_acc:.4f}')
+
+    # Save model
+    torch.save(model.state_dict(), 'absa_bert_model.bin')
+    print("\nTraining complete. Model saved.")

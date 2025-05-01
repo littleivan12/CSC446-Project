@@ -15,5 +15,5 @@ This project implements Aspect-Based Sentiment Classification (ABSA) for restaur
 1. Clone Repository
 2. Download Required Imports: 
 - Python 3.8+
-- pip install pandas numpy spacy sklearn transformers torch
+- pip install pandas numpy spacy scikit-learn transformers torch tqdm
 - python -m spacy download en_core_web_sm
