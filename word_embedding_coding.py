@@ -1,5 +1,5 @@
-# word embedding analysis for resuarant reviews
-#Performance of sentiment and aspect analysis on restaurant reviews
+# Word embedding analysis for restaurant reviews
+# Performance of sentiment and aspect analysis on restaurant reviews
 import os
 import ast
 import pandas as pd

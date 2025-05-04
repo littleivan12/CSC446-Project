@@ -51,6 +51,7 @@ def load_reviews_dataset(file_path):
     
     return Dataset.from_dict({"text": df['Text'].tolist()})
 
+
 def tokenize_reviews(dataset):
     tokenizer = GPT2Tokenizer.from_pretrained(MODEL_NAME)
     tokenizer.add_special_tokens({'additional_special_tokens': SENTIMENT_TOKENS})
@@ -116,6 +117,7 @@ def generate_reviews(model, tokenizer, base_prompt):
             repetition_penalty=1.1,
             do_sample=True
         )
+        
         generated[sentiment] = result[0]['generated_text'].replace(full_prompt, "").strip()
     return generated
 
